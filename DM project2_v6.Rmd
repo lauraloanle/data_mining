@@ -1,0 +1,856 @@
+---
+title: "Predicting the Income Level based on Various Factors"
+author: "Laura Le"
+date: "3/25/2020"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r}
+library('tidyverse') 
+library('scales')
+library('caret')
+library('VIM')
+library ('MASS')
+library('klaR')
+library('mlbench')
+library('kernlab')
+library('randomForest')
+library('glmnet')
+library('e1071')
+library('naivebayes')
+library('rpart')
+library('pls')
+library('neuralnet')
+library('doParallel')
+library('ggplot2')
+library('rpart.plot')
+library('ROCR')
+library('ISLR')
+library('gbm')
+library('dismo')
+library('fastAdaboost')
+```
+
+#### Dataset information: 
+
+The Us Adult income dataset was extracted by Barry Becker from the 1994 US Census Database. The data set consists of anonymous information such as occupation, age, native country, race, capital gain, capital loss, education, work class and more.
+Each row is labelled as either having a salary greater than ">50K" or "<=50K".
+
+The dataset was downloaded from:
+http://archive.ics.uci.edu/ml/datasets/Adult
+
+#### Objective:
+
+The goal here is to train a binary classifier on the training dataset to predict the column 'income' which has two possible values ">50K" and "<=50K" and evaluate the accuracy of the classifier with the test dataset.
+
+The method that can be used including:
+* Binary Logistic Regression
+* Decision Tree
+* Random Forest
+
+Data cleaning method: kNN 
+
+###  PART1. EXPLORATORY DATA ANALYSIS
+#### Data Cleaning:
+
+##### Problems in the original data
+
+* Data does not contain column names.
+* The first row of 'test' data is plain without any observation, solution is to skip the first row of this dataset.
+* Factor of income in 'adult' data are '<=50K' and '>50K' while those in 'test' data are '<=50K.',' >50K.'
+* There are some values in comlumns marked as " ?", we can convert these to NA while loading the data
+
+
+##### Load the data
+
+```{r}
+# Load 'adult' dataset, replace " ?" values with "NA" values.
+
+training <- read.csv('http://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data', header = FALSE, na.strings = c(" ?","NA"))
+
+# Name the columns
+
+colnames(training) <- c("age","workclass","fnlwgt","education","education.num","marital.status","occupation","relationship","race","sex","capital.gain","capital.loss","hours.per.week","native.country","income")
+
+# Load 'test' dataset, replace " ?" values with "NA" values, skip the first row of data.
+
+testing <- read.csv("http://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.test", header = FALSE, skip = 1, na.strings = c(" ?","NA"))
+
+# Name the columns
+
+colnames(testing) <- c("age","workclass","fnlwgt","education","education.num","marital.status","occupation","relationship","race","sex","capital.gain","capital.loss","hours.per.week","native.country","income")
+
+# Rename the factors of testing to be consistent with training
+levels(training$income) <-c("<=50",">50K")
+levels(testing$income) <-c("<=50",">50K")
+levels(testing$native.country) <- levels(training$native.country)
+
+nrow(training)
+nrow(testing)
+```
+
+
+```{r}
+train=1:32561
+test=-(train)
+
+#Check the summary of data:
+full  <- bind_rows(training, testing)
+
+str(full)
+```
+
+
+```{r}
+#Count of NAs
+sapply(full,function(x)sum(is.na(x)))
+```
+
+```{r}
+#Table of categorical variables:
+sapply(full,function(x)if(is.factor(x))table(x))
+
+```
+
+```{r}
+#Histogram of age:
+hist(full$age)
+#Histogram of final weight:
+hist(full$fnlwgt)
+#Histogram of education.num
+hist(full$education.num)
+#Histogram of hour.per.week
+hist(full$hours.per.week)
+```
+
+```{r}
+#Table of whether there is capital gain or loss versus income
+table(full$capital.gain==0,full$income)
+table(full$capital.loss==0,full$income)
+```
+
+##### Remove predictors that are not self-explanatory before applying classification algorithms
+
+* capital.gain and capital.loss: income from other sources such as investment instead of salary/wage. These two variables have a single dominant class and thus little predictive power.
+
+* fnlwgt: final weight, which is the number of units in the target population that the responding unit represents. This feature also does not related to income.
+
+* education.num: stands for the number of years of education in total. We can skip this variable while evaluating 'education' varible, since education.num is just ordinal representation of education.
+
+* relationship: represents the responding unit’s role in the family.
+
+
+```{r}
+
+# To simplify the analysis, remove the above predictors in full dataset
+full$capital.gain <- NULL
+full$capital.loss <- NULL
+full$education.num <- NULL
+full$fnlwgt <- NULL
+full$relationship <- NULL
+
+```
+
+
+#### kNN imputation to replace NAs
+
+##### According to observarion, there are only three columns having NA values including 'workclass', 'occupation','native.country'. Therefore, we specifically perform KNN imputatation on these 3 variables.
+
+
+```{r,cache=TRUE}
+set.seed(100)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+
+full1 <- kNN(full, variable = c('workclass', 'occupation','native.country'), k = 5)
+
+stopCluster(cl)
+```
+
+##### Check validity of the imputation
+```{r}
+pie(table(full$workclass), main="workclass: Original")
+pie(table(full1$workclass), main="workclass: Imputed")
+
+pie(table(full$occupation), main="occupation: Original")
+pie(table(full1$occupation), main="occupation: Imputed")
+
+pie(table(full$native.country), main="native.country: Original")
+pie(table(full1$native.country), main="native.country: Imputed")
+
+```
+
+We can see the imputation creating some dummies at the end of the data.
+
+##### Create new dataset that excluding the dummies variables
+
+```{r}
+full1 <- full1[,1:10]
+full  <- bind_rows(training, testing)
+```
+
+
+
+#### Data visualization
+
+##### Check the relationship between income and age
+
+```{r}
+ggplot(full) + aes(x=as.numeric(age), group = income, fill = income) +
+  geom_histogram(binwidth = 1, color = "black") +
+  labs(x="Age", y = "Count", title = "Incomes by age")
+```
+
+We can see that more people make under 50K per year. Those make more than 50K are in their mid-career at the age between 30 and 55.
+
+##### Check the relationship between income and hours per week
+
+```{r}
+ggplot(full) + aes(x=as.numeric(hours.per.week), group = income, fill = income) +
+  geom_histogram(binwidth = 4, color = "black") +
+  labs(x="Hour per week", y = "Count", title = "Incomes by working hours")
+```
+
+In generalm most people working around 42 to 60 hours per week. Specifically, high income people do not work less than 30 hours a week and not more than 72 hours a week.
+
+##### Distribution of Hours Per Week
+```{r}
+ggplot(full, aes(x = hours.per.week)) +
+  geom_density(fill = '#99d6ff', alpha=0.4) + 
+  geom_vline(aes(xintercept=median(hours.per.week, na.rm=T)),
+    colour='red', linetype='dashed', lwd=1) +
+  scale_x_continuous() 
+```
+
+##### Check the relationship between age and gender
+
+```{r}
+ggplot(full) + aes(x=as.numeric(age), group = sex, fill = sex) +
+  geom_histogram(binwidth = 1, color = "black") +
+  labs(x="Age", y = "Count", title = "Gender in respect of age")
+```
+Majority of the samples are male.
+
+##### Check the relationship between income and gender
+
+```{r}
+#Sex and income
+ggplot(full, aes(age, fill = factor(income))) + 
+  geom_histogram() + 
+  facet_grid(.~sex)
+```
+
+##### Check Income by Workclass
+
+```{r}
+
+ggplot(data= full, aes(x=workclass, y = income, fill=income)) +
+  geom_bar(stat="identity") + 
+  labs(title="Income by Work class", 
+         x="Employment status", y = "Income") +
+  scale_fill_manual(values=c("#999999", "#E69F00")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+##### Check Income by Occupation
+
+```{r}
+ggplot(full, aes(x = occupation, fill = income))+
+  geom_bar(stat='count', position='dodge') +
+  labs(x = 'occupation')+ theme(axis.text.x=element_text(angle=90,hjust=1))
+```
+
+##### Mosaic Plots
+
+```{r}
+#Income by Work Class
+par(pin=c(7,3),las=2)
+mosaicplot(table(full$workclass, full$income), main='Income by Work Class', shade=TRUE)
+```
+
+```{r}
+#Income by Education Level
+par(pin=c(7,3),las=2)
+mosaicplot(table(full$education, full$income), main='Income by Education Level', shade=TRUE)
+```
+```{r}
+#Income by marital.status
+par(pin=c(7,3),las=2)
+mosaicplot(table(full$marital.status, full$income), main='Income by Marital Status', shade=TRUE)
+```
+
+```{r}
+#Income by ralationship
+par(pin=c(7,3),las=2)
+mosaicplot(table(full$relationship, full$income), main='Income by Relationship', shade=TRUE)
+```
+```{r}
+#Income by race
+par(pin=c(7,3),las=2)
+mosaicplot(table(full$race, full$income), main='Income by Race', shade=TRUE)
+```
+
+
+```{r}
+#Train and test set split
+x.train <- full1[train,]#put regressors from training set into a matrix
+y.train <- full1[train,]$income #label for training set
+x.test <- full1[test,]#put regressors from test set into a matrix
+y.test <- full1[test,]$income #label for test set
+```
+
+
+### PART2. MODEL FITTING
+
+#### Logistic Regression
+
+```{r}
+2.33333/(1+2.33333)
+```
+
+```{r}
+
+# model implementation
+
+adult_lg<-glm(income~.,data = x.train,family = "binomial")
+
+# argument (family = "binomial") is necessary as we are creating a model with dichotomous result
+
+summary(adult_lg)
+```
+
+To check how well is our builded-logistic regression model, we need to calculate predicted probabilities. Our calculated probabilities also need to be classified. In order to do that, we need to decide the threshold that best classifies our predicted results.
+
+##### Add column predicted probabilities to the training dataset
+
+```{r}
+
+lm.pred<- fitted(adult_lg)
+
+```
+
+
+```{r}
+#Compare predicted values with the actual values in the training set
+
+prediction <- prediction(lm.pred, y.train)
+
+# Stores the measures with respect to which we want to plot the ROC graph
+
+perf<-performance(prediction,"tpr","fpr")
+
+# Plots the ROC curve
+
+plot(perf,colorize=T,print.cutoffs.at=seq(0.1,by=0.05))
+```
+
+
+```{r}
+
+# We assign that threshold where sensitively and specifically have almost similar values after observing the ROC graph
+
+lm.pred<-ifelse(lm.pred < 0.5,0,1) 
+
+# This 'predict_income' coloumn will classify probabilities we calculated and classify them as 0 or 1 based on our threshold value (0.5) and store in this coloumn
+
+head(lm.pred)
+```
+
+###### Creating confusion matrix and assesing the results:
+
+```{r}
+# Creating confusion matrix
+train_log <- table(lm.pred,y.train)
+
+# Calulate accuracy
+accuracy <- function(x){sum(diag(x)/(sum(rowSums(x)))) * 100}
+accuracy (train_log)
+```
+
+
+Resulted from the 0.5 threshold, the accuracy result shows that this logistic regression model can predict 83.46% dataset. This is a good model because the sensitivity and specificity percentages of this model are also large.What is interesting about this model is that it shows that the race weren't significant, and there are only some native countries being significant in income prediction such as Columbia, China, India, Vietnam. 
+
+
+##### Check how well this builded model fit the test data
+
+
+```{r}
+
+log_predict_prob_income <- predict(adult_lg, x.test, type = "response")
+
+# an extra argument(type = "response") is required while using 'predict' function to generate response as probabilities
+# this argument is not required while using 'fitted'
+
+log_predict_income<-ifelse(log_predict_prob_income < 0.5,0,1)
+
+# we take the same threshold to classify which we considered while classifying probabilities of training data
+
+#head(test2)
+```
+
+
+###### Creating confusion matrix and assesing the results:
+
+```{r}
+# Creating confusion matrix
+test_log <- table(y.test,log_predict_income)
+
+# Calulate accuracy
+accuracy (test_log)
+
+```
+
+```{r}
+
+prediction_test <- prediction(log_predict_prob_income, y.test)
+
+# Check the predicted value lies inside the curve
+
+auc<-performance(prediction_test,"auc")
+
+auc@y.values
+```
+
+We can conclude that the accuracy of this model is about 81% with 88% of our predicted values lying under the curve. The missclassification rate is 12%. Therefore, this is a good model because the sensitivity and specificity percentages of this model are also large.
+
+
+#### Decision Tree
+
+##### Implement the decision tree:
+
+```{r}
+adult_tree <- rpart(income~., data = x.train)
+
+tr_predict_income <- predict (adult_tree,x.test,type = "class")
+
+```
+
+
+###### Creating confusion matrix and assesing the results:
+
+```{r}
+# Creating confusion matrix
+test_tree <- table(y.test,tr_predict_income)
+
+# Calulate accuracy
+accuracy (test_tree)
+```
+
+We are getting an model accuracy of 82.53%
+
+
+##### Plot the decision tree
+
+```{r}
+rpart.plot(adult_tree,cex = 0.6, main="The Pruned Tree for Training Data Set") # cex argument was just to adjust the resolution
+```
+
+
+According to the decision tree, we can see that:
+
+- At the top, it is the overall probability of income. It shows that 24% people who have income more than 50K a year.
+- There are 54% people whose marital status are divorced, married spouse absent, never married, separated and widowed. Only 6% of this group has high income (>50K). We call this is group 1.
+- The rest 46% people have other marital status and they have higher chance to get more than 50K income per year (45%). We call this is group 2.
+- In group 2, 14% people have higher education such as : Bachelors, Doctorate, Masters, Prof-school degrees. The proportion that they get more than 50K income is 72%.
+- The rest of group 2 account for 32% population, they have 33% chance to get more than 50K per year. We call this is group 3.
+- In group 3, 19% people working as armed forces, craft repair, farming fishing, handlers cleaners, machince-op-inspct, privte house service, transport moving and other service. Probability showing that 24% of these one can have high income.
+- Otherwise, 13% people have another jobs can get 46% chance of having more than 50K a year. This is group 4.
+- Continue analyze group 4, if they are younger than 34, their chance to get more than 50K income is 3%, while when become older than 34, this rate jumps up to 10%.
+- With the group older than 34 years old above, if they worl less than 35 hour per week, they only have 1% chance to make more than 50K while when they work more than 35 hours, they have 9% to earn more money.
+
+```{r}
+#This function returns the optimal complexity value associated with the minimum error.
+optimal_cp = adult_tree$cptable[which.min(adult_tree$cptable[,"xerror"]),"CP"]
+optimal_cp
+```
+
+```{r}
+# Prune the tree by applying the optimal complexity value 
+adult_tree.prune<- prune(adult_tree, cp= optimal_cp)
+adult_tree.prune
+adult_tree$cptable
+
+# Plot the pruned tree
+rpart.plot(adult_tree.prune, cex = 0.6, main="The Pruned Tree for Training Data Set")
+```
+
+```{r}
+#Create the confusion matrix for training data set
+adult_tree.pred = predict(adult_tree.prune, type="class")
+confusionMatrix(adult_tree.pred, y.train)
+# The accuracy rate is 0.8284
+```
+
+```{r}
+#making predictions for test set
+tree.pred=predict(adult_tree.prune,x.test,type="class") 
+
+#Create the confusion matrix for test set
+confusionMatrix(tree.pred, y.test)
+# The accuracy rate is 0.8246
+```
+
+```{r}
+# Create the roc plot
+dt_pred = predict(adult_tree.prune, x.test, type="prob")
+dt_prediction <- prediction(dt_pred[,2], y.test)
+dt_roc<-performance(dt_prediction,"tpr","fpr")
+plot(dt_roc,main = "Decision Tree ROC")
+dt_auc <- performance(dt_prediction,"auc")
+dt_auc <- unlist(slot(dt_auc, "y.values"))
+dt_auc
+abline(a=0, b=1)
+# The auc value is 0.8248
+```
+
+
+#### Random Forest
+
+
+```{r}
+##Apply bagging on decision tree. The default number of trees is 500. To improve the model performance, we can try different number of "mtry" and check performance.
+
+set.seed(1)
+bag.adult2 = randomForest(income~.,data=x.train, mtry=2, importance=TRUE) 
+bag.adult2
+
+# The OOB rate is 15.68% when mtry = 2
+```
+The Out of Bag error (OOB) gives us the miscalssification rate (MCR) of the model. In this case it comes out to be 15.79%, which gives us the accuracy of 84.21%
+
+```{r}
+set.seed(1)
+bag.adult3 = randomForest(income~.,data=x.train, mtry=3, importance=TRUE) 
+bag.adult3
+# The OOB rate is 16.45% when mtry = 3
+```
+
+```{r}
+set.seed(1)
+bag.adult4 = randomForest(income~.,data=x.train, mtry=4, importance=TRUE) 
+bag.adult4
+# The OOB rate is 17.21% when mtry = 4
+```
+
+```{r}
+set.seed(1)
+bag.adult5 = randomForest(income~.,data=x.train, mtry=5, importance=TRUE) 
+bag.adult5
+# The OOB rate is 17.71% when mtry = 5
+```
+
+```{r}
+set.seed(1)
+bag.adult6 = randomForest(income~.,data=x.train, mtry=6, importance=TRUE) 
+bag.adult6
+# The OOB rate is 18.23% when mtry = 6
+```
+
+Since the OOB rate will be lowest when mtry = 2 after trying different number of mtry, we will select 2 as the mtry value for the final random forest model. Its OOB rate comes out to be 15.68%, which gives us the accuracy of 84.32%
+
+##### Check classwise error
+
+```{r}
+
+plot(bag.adult2)
+```
+
+The red line represents MCR of class <= 50k, the green line represents MCR of class >50k and black line represents overall MCR or OOB error. We need to find out the overall MCR and it is considered quite good.
+
+
+```{r}
+#Check the importance of the variables in the dataset
+
+varImpPlot(bag.adult2)
+importance(bag.adult2)
+
+```
+
+```{r}
+# Create the roc plot
+rf_pred = predict(bag.adult2, x.test, type="prob")
+rf_prediction <- prediction(rf_pred[,2], y.test)
+rf_roc<-performance(rf_prediction,"tpr","fpr")
+plot(rf_roc, main = "Naive Bayes ROC")
+rf_auc <- performance(rf_prediction,"auc")
+rf_auc <- unlist(slot(rf_auc, "y.values"))
+rf_auc
+abline(a=0,b=1)
+# The auc value is 0.8771
+```
+
+As we can see from both the importance table and the plots, the most important variable is marital.status, which means marital status plays an important role when predicting income. Beside, ome other factores such as age, education, and occupation are also have high importance in this model. 
+
+
+#### Naive Bayes Model
+
+```{r}
+set.seed(1)
+nb.adult1 <- naiveBayes(income ~ ., data = x.train)
+nb.adult1
+```
+
+
+```{r}
+#Check the test error
+nb_pred <- predict(nb.adult1, x.test)
+confusionMatrix(nb_pred, y.test)
+
+# From the output, the accuracy of Naive Bayes model is 0.8277
+```
+
+```{r}
+# Create the roc plot
+nb_pred = predict(nb.adult1, x.test, type="raw")
+nb_prediction <- prediction(nb_pred[,2], y.test)
+nb_roc<-performance(nb_prediction,"tpr","fpr")
+plot(nb_roc, main = "Naive Bayes ROC")
+nb_auc <- performance(nb_prediction,"auc")
+nb_auc <- unlist(slot(nb_auc, "y.values"))
+nb_auc
+abline(a=0,b=1)
+# The auc value is 0.8767
+```
+
+#### Adaptive Boosting
+
+```{r}
+library(fastAdaboost)
+set.seed(1)
+
+# Initially, we choose to use 15 classifiers for adaptive boosting
+test_adaboost <- adaboost(income~. , x.train, 15)
+
+bpred_train <- predict(test_adaboost, x.train)
+confusionMatrix(bpred_train$class, y.train)
+
+bpred_test <- predict(test_adaboost, x.test)
+confusionMatrix(bpred_test$class, y.test)
+
+# The accurate rate for training set is 0.9596, and for test set is 0.8171.
+```
+
+```{r}
+### (Need long time to run)
+# To improve the model performance, we can try different number of iterations and check performance.
+set.seed(1)
+
+n_list = c(10,30,50,70)
+
+for (n_iter in n_list)
+{
+  test_adaboost2 <- adaboost(income~. , x.train, n_iter)
+  bpred_test2 <- predict(test_adaboost2, x.test)
+  print(paste(n_iter, ":",bpred_test2$error)) 
+}
+# As we can see from the output, when iteration number is 30, it will have the lowest error rate compared to other iteration numbers, which is 0.1903. So we will choose 30 as the iteration number in our final adaboost model. 
+```
+
+```{r}
+set.seed(1)
+
+test_adaboost3 <- adaboost(income~. , x.train, 30)
+
+bpred_train3 <- predict(test_adaboost, x.train)
+confusionMatrix(bpred_train3$class, y.train)
+
+bpred_test3 <- predict(test_adaboost, x.test)
+confusionMatrix(bpred_test3$class, y.test)
+#When iteration number is 30, the accuracy rate is 0.8171 for test set and 0.9596 for training set.
+```
+
+
+```{r}
+# AdaBoost adapts based on errors in predicted class labels whereas Real AdaBoost uses the predicted class probabilities. Next, we will try Real AdaBoost to train our data set.
+set.seed(1)
+
+test_real_adaboost <- real_adaboost(income~. , x.train, 30)
+
+real_bpred_train <- predict(test_real_adaboost, x.train)
+confusionMatrix(real_bpred_train$class, y.train)
+
+real_bpred_test <- predict(test_real_adaboost, x.test)
+confusionMatrix(real_bpred_test$class, y.test)
+
+# The accurate rate for training set is 0.9576, and for test set is 0.8139. 
+# We choose test_adaboost3 (number of iteration = 30) as the final model with the accuracy of 0.8171, because it has the highest accuracy.
+# In general, adaptive boosting model has really good fit on training set, but its test error is much larger than its training error.
+```
+
+```{r}
+# Create the roc plot
+ab_pred = predict(test_adaboost3, x.test, type="prob")
+ab_prediction <- prediction(ab_pred$prob[,2], y.test)
+ab_roc<-performance(ab_prediction,"tpr","fpr")
+plot(ab_roc, main = "AdaBoost ROC")
+ab_auc <- performance(ab_prediction,"auc")
+ab_auc <- unlist(slot(ab_auc, "y.values"))
+ab_auc
+abline(a=0,b=1)
+# The auc value is 0.8482
+```
+
+#### Gradient Boositng
+
+```{r}
+# Initially, we build the gradiant boosting model by selecting n.trees = 2000 and shrinkage = .05. And we will do parameter tuning afterwards.
+gb_adult = gbm(income ~.,
+              data = x.train,
+              distribution = "multinomial",
+              cv.folds = 10,
+              shrinkage = .05,
+              n.minobsinnode = 10,
+              n.trees = 200)
+print(gb_adult)
+```
+
+```{r}
+pred = predict.gbm(object = gb_adult,
+                    newdata = x.test,
+                    n.trees = 200,
+                    type = "response")
+
+# The predicted result is numeric data. To evaluable the model performance, we'll get the the prediciton of 'income' with the highest prediction value.
+
+gb_income = colnames(pred)[apply(pred, 1, which.max)]
+result = data.frame(y.test, gb_income)
+
+confusionMatrix(y.test, as.factor(gb_income))
+
+# The accuracy rate for test set is 0.8194, which means the gradiant boosting model fits the data set well.
+```
+
+```{r}
+# learning rate tuning
+learning_rates = c(0.5, 0.25, 0.1, 0.05, 0.01)
+for (i in learning_rates)
+{
+gb_adult2 = gbm(income ~.,
+              data = x.train,
+              distribution = "multinomial",
+              cv.folds = 10,
+              shrinkage = i,
+              n.minobsinnode = 10,
+              n.trees = 200)
+
+pred2 = predict.gbm(object = gb_adult2,
+                    newdata = x.test,
+                    n.trees = 200,
+                    type = "response")
+
+gb_income2 = colnames(pred2)[apply(pred2, 1, which.max)]
+gb_accu = accuracy(table(y.test, as.factor(gb_income2)))
+print(paste(i, ":",gb_accu)) 
+
+}
+
+# As we can see from the output, when learning rate is 0.05, the accuaracy rate will be lower than the others (0.8331). So we will select 0.05 as the learning rate for this model.
+```
+
+
+
+```{r}
+# Interaction.depth tuning
+interaction_depth = c(1:5)
+for (i in interaction_depth)
+{
+gb_adult3 = gbm(income ~.,
+              data = x.train,
+              distribution = "multinomial",
+              cv.folds = 10,
+              shrinkage = 0.05,
+              n.minobsinnode = 10,
+              n.trees = 200)
+
+pred3 = predict.gbm(object = gb_adult3,
+                    newdata = x.test,
+                    n.trees = 200,
+                    type = "response")
+
+gb_income3 = colnames(pred3)[apply(pred3, 1, which.max)]
+gb_accu3 = accuracy(table(y.test, as.factor(gb_income3)))
+print(paste(i, ":",gb_accu3)) 
+
+}
+
+# As we can see from the output, when interaction_depth = 1, the accuaracy rate will be lowest (0.8337). So we will select 1 as the interaction depth for this model.
+```
+
+
+```{r}
+# Tree size tuning
+# Since we need to use Bernoulli distribution to calculate the optimal number of trees, a new columns is added to adult2 dataset as 'income2' to convert 'income' to 0 or 1.
+
+adult2$income2[adult2$income == ' <=50K'] <- 0
+adult2$income2[adult2$income == ' >50K'] <- 1
+
+# Calculate the optimal number of trees by applying gbm.step function
+opt_ntree <- gbm.step(data=x.train, gbm.x = 1:9, gbm.y = 11,
+                             family = "bernoulli", tree.complexity = 2,
+                             learning.rate = 0.05, bag.fraction = 0.5)
+
+# As we can from the output, the optimal number of trees should be 1450.
+```
+
+```{r}
+# Drop the income2 column
+adult2$income2<-NULL
+```
+
+
+```{r}
+# After doing parameter tuning, the final values used for the model were shrinkage = .05, interaction.depth = 1, and n.trees = 1450
+set.seed(1)
+
+gb_adult4 = gbm(income ~.,
+              data = x.train,
+              distribution = "multinomial",
+              cv.folds = 10,
+              shrinkage = .05,
+              interaction.depth = 1,
+              n.minobsinnode = 10,
+              n.trees = 1450)
+print(gb_adult4)
+
+pred4 = predict.gbm(object = gb_adult4,
+                    newdata = x.test,
+                    n.trees = 1450,
+                    type = "response")
+
+
+gb_income4 = colnames(pred4)[apply(pred4, 1, which.max)]
+confusionMatrix(y.test, as.factor(gb_income4))
+# So the final gradiant boosting model has the accuracy rate of 0.8249. 
+```
+
+```{r}
+# Create the roc plot
+gb_pred = predict(gb_adult4, x.test, type="response")
+gb_prediction <- prediction(gb_pred[, 2, 1], y.test)
+gb_roc<-performance(gb_prediction,"tpr","fpr")
+plot(gb_roc, main = "Gradient Boosting ROC")
+gb_auc <- performance(gb_prediction,"auc")
+gb_auc <- unlist(slot(gb_auc, "y.values"))
+gb_auc
+abline(a=0, b=1)
+# The auc value is 0.8895
+```
+
+```{r}
+# Relative Influence plot
+gb_inf <- summary(gb_adult4)
+gb_var <- gb_inf$var
+gb_rel.inf <- gb_inf$rel.inf
+gb_inf <- data.frame(gb_var, gb_rel.inf)
+ggplot(gb_inf) + aes(x = gb_var, y = gb_rel.inf) +
+  geom_bar(size = 6, stat="identity") +
+  labs(x="Variable", y = "Relative Influence", title = "Gradient Boosting Model Relative Influence") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 12))
+```
+
+
+#### Conclusion
+
+After performing various classification techniques and taking into account their accuracies, we can conclude all the models had an accuracy ranging from 81% to 84%. Out of which Random forest gave a slightly better accuracy of 84.21%
+
